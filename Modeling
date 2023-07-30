@@ -1,0 +1,298 @@
+
+# initial setup
+library(dplyr)
+library(glmnet)
+library(caret)
+library(nnet)
+library(randomForest)
+library(naivebayes)
+library(ggplot2)
+library(corrplot)
+library(pROC)
+set.seed(0802)
+
+
+# upload data, clean data
+training_outcomes = read.csv("ml.csv",sep = ";", na.strings = "", stringsAsFactors = T)
+training_outcomes = training_outcomes[, c(1, 2, 4:19, 22:32, 34:36,33)]
+str(training_outcomes)
+
+training_outcomes$highest_status = factor(training_outcomes$highest_status, levels = c("Discontinued", 
+                                                                                       "Pre Clinical Trials", 
+                                                                                       "Phase 1 Clinical Trials", 
+                                                                                       "Phase 2 Clinical Trials",  
+                                                                                       "Phase 3 Clinical Trials", 
+                                                                                       "Approved")) 
+
+# outcome visualization
+          # create a color palette for highest_status
+ggplot(data = training_outcomes, aes(x = highest_status, fill = highest_status)) + 
+    geom_bar() + 
+    labs(title = "Highest status in drug development pipeline") +
+    theme(plot.title = element_text(size = 12, face = "bold"),
+          panel.background = element_rect(fill = "transparent"),
+          panel.grid.major = element_blank(),                   #
+          panel.grid.minor = element_blank()) +
+          geom_text(stat = "count", aes(label = stat(count)), vjust = -0.5) + 
+          theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggplot(data = training_outcomes, aes(x = highest_status)) + 
+  geom_bar() + 
+  labs(title = "Highest status in drug development pipeline") +
+  theme(plot.title = element_text(size = 12, face = "bold"),
+        panel.background = element_rect(fill = "transparent"),
+        panel.grid.major = element_blank(),                   #
+        panel.grid.minor = element_blank()) +
+  geom_text(stat = "count", aes(label = stat(count)), vjust = -0.5) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# (3:11) is integer, (12:16) is numeric, (17:32) is categorical
+# numeric variables correlation
+cor = cor(training_outcomes[,3:16], use = "complete.obs")
+corrplot(cor,
+         type = "upper",
+         tl.col = "black",
+         tl.cex = 0.8,
+         tl.srt = 45,
+         title = "Correlation table for numerical features")
+
+
+
+
+
+#data partition
+training_outcomes_idx = createDataPartition (training_outcomes$highest_status, 
+                                             p = 0.8, list = F) #assume 80% will be training set
+
+
+
+
+
+
+#m0: logistic regression with all features except str value (inchikey and smiles)
+          ## check feature importance in the 
+m0_train = training_outcomes[training_outcomes_idx, c(3:33)]
+m0_test = training_outcomes[-training_outcomes_idx, c(3:33)]
+
+m0 <- multinom(highest_status ~ ., data = m0_train, family = multinomial)
+
+coef(m0)
+
+m0_ci = confint(m0, level=0.95) 
+m0_ci[1]
+names(m0_ci)
+
+#check feature importance
+a = coef(m0) %>% 
+  abs() %>% 
+  apply(1,function(x)rank(-x)) %>% 
+  t()
+
+#feature importance for each class
+for (i in c(1:10)) {
+  b = colnames(a)[a[5,] == i]
+  print(b)
+}
+
+
+
+m0_feature_importance = colMeans(a) %>% 
+           sort() %>% 
+            head(30) %>% 
+              as.data.frame
+
+#m0 prediction
+pre_m0 <- predict(m0, newdata = m0_test)
+cm = confusionMatrix(data = pre_m0, reference = m0_test$highest_status)
+m0_cm = cm$table 
+
+#m0 result
+cm$overall
+      #prop.test(sum(diag(m0_cm)), sum(m0_cm))$conf.int #accuracy CI
+
+# accuracy, precision, sensitivity, f1 for each class and all, AUC ROC for all
+accuracy <- 1
+balanced_accuracy <- 1
+precision <- 1
+sensitivity <- 1
+f1_score <- 1
+i=2
+(m0_cm[i,i] + (sum(m0_cm) - sum(m0_cm[i,]) - sum(m0_cm[,i]) + m0_cm[i,i])) /
+  sum(m0_cm)
+
+for (i in 1:nrow(m0_cm)) {
+  accuracy[i] = sum(diag(m0_cm)) / sum(m0_cm)
+  balanced_accuracy[i] = ((m0_cm[i, i] / sum(m0_cm[, i])) + (sum(m0_cm[-i, -i]) / sum(m0_cm[-i, ]))) / 2
+  precision[i] = m0_cm[i,i] / sum(m0_cm[i,])
+  sensitivity[i] = m0_cm[i,i] / sum(m0_cm[,i])
+  f1_score[i] <- 2 * (precision[i] * sensitivity[i]) / (precision[i] + sensitivity[i])
+}
+m0_metrics <- data.frame(
+  Outcome = colnames(m0_cm),
+  Accuracy = accuracy,
+  Balanced_accuracy = balanced_accuracy, 
+  Precision = precision,
+  Sensitivity = sensitivity,
+  F1_Score = f1_score
+) %>% 
+  rbind(c(
+    "Overall",
+    mean(accuracy),
+    mean(balanced_accuracy),
+    mean(precision),
+    mean(sensitivity),
+    mean(f1_score)
+    ))
+m0_metrics$AUC_ROC[7] = 0.6515
+
+                # calculate roc
+                roc = multiclass.roc(m0_test$highest_status, factor(pre_m0, levels = c("Discontinued", 
+                                                                                 "Pre Clinical Trials", 
+                                                                                 "Phase 1 Clinical Trials", 
+                                                                                 "Phase 2 Clinical Trials",  
+                                                                                 "Phase 3 Clinical Trials", 
+                                                                                 "Approved"),
+                                                              , ordered = T)) 
+                for (i in 1:15) {
+                  plot(roc$rocs[[i]], col = "red", main = "Multiclass ROC Curve")  
+                }
+                
+                roc$rocs[[15]]
+                str(roc)
+
+m0_metrics$Outcome = factor(m0_metrics$Outcome, levels = c("Discontinued", 
+                                                                                       "Pre Clinical Trials", 
+                                                                                       "Phase 1 Clinical Trials", 
+                                                                                       "Phase 2 Clinical Trials",  
+                                                                                       "Phase 3 Clinical Trials", 
+                                                                                       "Approved", 
+                                           "Overall")) 
+
+
+for (i in 2:6) 
+  {
+  plot = 
+    ggplot(data = m0_metrics, aes(x = Outcome, y = as.numeric(m0_metrics[, i])), fill = Outcome) + 
+    geom_col() + 
+    geom_hline(yintercept = mean(as.numeric(m0_metrics[, i])), color = "red", linetype = "dashed", 
+               size = 1, show.legend = T) +
+    theme(plot.title = element_text(size = 12, face = "bold"),
+          panel.background = element_rect(fill = "transparent")) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) + 
+    labs(title = colnames(m0_metrics)[i], x = "", y = "")
+  print(plot)
+}
+
+# add standard deviation
+
+  rbind(m0_metrics, c("Standard Deviation", apply(m0_metrics[, -1], 2, sd)))
+
+
+              
+
+
+
+     
+#kfold 
+k = 10
+folds <- createFolds(training_outcomes$highest_status, k = k)
+
+for (fold in 1:k) {
+  train_indices <- unlist(folds[-fold])
+  test_indices <- folds[[fold]]
+  train_data <- training_outcomes[train_indices, ]
+  test_data <- training_outcomes[test_indices, ]
+  
+  multinom_model <- multinom(highest_status ~ ., data = training_outcomes_ml_train, family = multinomial)
+  
+  predictions_multinom <- predict(multinom_model, newdata = training_outcomes_ml_test)
+  
+  cm_multinom <- table(training_outcomes_ml_test$highest_status, predictions_multinom)
+  accuracy_multinom <- sum(diag(cm_multinom)) / sum(cm_multinom)
+  print(accuracy_multinom)
+}
+
+
+
+
+
+
+
+
+#lasso regression for data regulation
+#lamda grid
+
+## lasso grid 1
+grid_lasso1 = expand.grid(alpha = 1, lambda = 10^seq(0,2,length = 100))
+m_lasso1 <- train(highest_status ~., 
+                 data = training_outcomes[3:33],
+                 method = "glmnet",
+                 trControl = trainControl(method = "cv", number = 10),
+                 tuneGrid = grid_lasso1)
+#result of m_lasso
+coef(m_lasso1$finalModel, m_lasso1$bestTune$lambda)
+
+cbind(a1[[1]], a1[[2]], a1[[3]], a1[[4]], a1[[5]], a1[[6]])
+
+#conclusion: a small lambda suggests multiple variables are relevant for prediction
+a1 = coef(m_lasso1$finalModel, m_lasso1$bestTune$lambda) 
+b1 = do.call(cbind, a1) 
+colnames(b1) = names(a1)
+#select the 10 most important features for each outcome
+c1 = apply(b1, 2,
+          function(x)
+            names(x[order(abs(x), decreasing = T)[1:11]])) %>%
+  as.data.frame()
+m1_feature_importance1 = unlist(c1) %>% 
+  table() %>% 
+  sort(decreasing = T)
+
+## lasso grid 2
+grid_lasso2 = expand.grid(alpha = 1, lambda = 10^seq(0,-2,length = 100))
+m_lasso2 <- train(highest_status ~., 
+                 data = training_outcomes[3:33],
+                 method = "glmnet",
+                 trControl = trainControl(method = "cv", number = 10),
+                 tuneGrid = grid_lasso2)
+#result of m_lasso
+coef(m_lasso2$finalModel, m_lasso2$bestTune$lambda)
+#conclusion: a small lambda suggests multiple variables are relevant for prediction
+a2 = coef(m_lasso2$finalModel, m_lasso2$bestTune$lambda) 
+b2 = do.call(cbind, a2) 
+colnames(b2) = names(a2)
+
+cbind(a2[[1]], a2[[2]], a2[[3]], a2[[4]], a2[[5]], a2[[6]])
+
+#select the 10 most important features for each outcome
+c2 = apply(b2, 2,
+          function(x)
+            names(x[order(abs(x), decreasing = T)[1:11]])) %>%
+  as.data.frame()
+m1_feature_importance2 = unlist(c2) %>% 
+  table() %>% 
+  sort(decreasing = T)
+
+## lasso grid 3
+grid_lasso3 = expand.grid(alpha = 1, lambda = 10^seq(-2,-4,length = 100))
+m_lasso3 <- train(highest_status ~., 
+                 data = training_outcomes[3:33],
+                 method = "glmnet",
+                 trControl = trainControl(method = "cv", number = 10),
+                 tuneGrid = grid_lasso3)
+#result of m_lasso
+coef(m_lasso3$finalModel, m_lasso3$bestTune$lambda)
+#conclusion: a small lambda suggests multiple variables are relevant for prediction
+a3 = coef(m_lasso3$finalModel, m_lasso3$bestTune$lambda) 
+b3 = do.call(cbind, a3) 
+colnames(b3) = names(a3)
+#select the 10 most important features for each outcome
+c3 = apply(b3, 2,
+          function(x)
+            names(x[order(abs(x), decreasing = T)[1:11]])) %>%
+  as.data.frame()
+m1_feature_importance3 = unlist(c) %>% 
+  table() %>% 
+  sort(decreasing = T)
+
+
+
