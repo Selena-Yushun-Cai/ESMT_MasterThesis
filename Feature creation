@@ -1,0 +1,1015 @@
+"-- molregno
+ALTER TABLE test.ms_training_outcomes
+ADD molregno bigint(20); 
+
+UPDATE test.ms_training_outcomes mto
+SET molregno = 
+(SELECT 
+ cs.molregno
+FROM nate_markush.compound_structures cs
+WHERE cs.standard_inchi_key = mto.inchikey); 
+
+
+-- higheststatus_num
+ALTER TABLE test.ms_training_outcomes
+ADD higheststatus_num bigint(4); 
+
+UPDATE test.ms_training_outcomes mto_1
+SET mto_1.higheststatus_num = 
+(SELECT 
+ CASE 
+     WHEN mto_2.higheststatus IN ('Discontinued', 'Suspended', 'Withdrawn', 'Outlicensed') THEN 4
+    WHEN mto_2.higheststatus IN ('Discovery', 'No Development Reported', 'Pre-registration') THEN 0
+    WHEN mto_2.higheststatus IN ('Phase 1 Clinical', 'Clinical', 'Registered') THEN 1
+    WHEN mto_2.higheststatus = 'Phase 2 Clinical' THEN 2
+    WHEN mto_2.higheststatus = 'Phase 3 Clinical' THEN 3
+    WHEN mto_2.higheststatus = 'Launched' THEN 5
+    ELSE -1
+ END
+FROM test.ms_training_outcomes mto_2
+WHERE mto_1.higheststatus = mto_2.higheststatus
+  AND mto_1.drugname = mto_2.drugname
+  AND mto_1.casregistrynumber = mto_2.casregistrynumber
+  AND mto_1.indications = mto_2.indications
+  AND mto_1.drugid = mto_2.drugid); "
+
+"CREATE TABLE test.ms_db AS (
+WITH base AS (
+SELECT 
+ molregno,
+ indications,
+ drugname,
+ casregistrynumber,
+ inchikey,
+ drugid,
+ higheststatus,
+ higheststatus_num,
+ ROW_NUMBER() OVER (PARTITION BY molregno, indications ORDER BY higheststatus_num DESC, higheststatus DESC) AS rank_1 
+FROM test.ms_training_outcomes mto
+WHERE molregno IS NOT NULL
+)
+SELECT 
+ molregno,
+ indications AS indication,
+ drugname,
+ casregistrynumber,
+ inchikey,
+ drugid,
+ higheststatus
+FROM (
+      SELECT
+       *
+      FROM base 
+      WHERE rank_1 = 1
+       ) b
+GROUP BY 1,2
+); "
+
+"CREATE TABLE test.ms_highest_status_indication as
+with highest_status_indication_base as (
+select 
+ indications,
+ case        
+    WHEN higheststatus IN ('Discontinued', 'Suspended', 'Withdrawn', 'Outlicensed') THEN 4
+    WHEN higheststatus IN ('Discovery', 'No Development Reported', 'Pre-registration') THEN 0
+    WHEN higheststatus IN ('Phase 1 Clinical', 'Clinical', 'Registered') THEN 1
+    WHEN higheststatus = 'Phase 2 Clinical' THEN 2
+    WHEN higheststatus = 'Phase 3 Clinical' THEN 3
+    WHEN higheststatus = 'Launched' THEN 5
+    ELSE -1
+ end as highest_status_indication
+from test.ms_training_outcomes mto),
+highest_status_indication_num as (
+select
+ indications,
+ max(highest_status_indication) as highest_status_indication
+from highest_status_indication_base
+group by 1)
+select 
+ indications as indication,
+ case        
+         when highest_status_indication = 0 then 'Pre Clinical Trials' 
+         when highest_status_indication = 1 then 'Phase 1 Clinical Trials'
+         when highest_status_indication = 2 then 'Phase 2 Clinical Trials' 
+         when highest_status_indication = 3 then 'Phase 3 Clinical Trials' 
+         when highest_status_indication = 4 then 'Discontinued' 
+         when highest_status_indication = 5 then 'Approved'
+         else 'NULL'
+ end as highest_status_indication
+from highest_status_indication_num;"
+
+"CREATE TABLE test.ms_db_metabolism AS 
+WITH metabolism AS 
+(
+SELECT md.*,
+max(m1.drug_record_id) AS drug_record_id,
+max(m2.substrate_record_id) AS substrate_record_id,
+max(m3.metabolite_record_id) AS metabolite_record_id,
+max(m1.enzyme_tid) AS enzyme_tid_1,
+max(m2.enzyme_tid) AS enzyme_tid_2,
+max(m3.enzyme_tid) AS enzyme_tid_3,
+max(m1.met_conversion) AS met_conversion_1,
+max(m2.met_conversion) AS met_conversion_2,
+max(m3.met_conversion) AS met_conversion_3
+FROM test.ms_db md 
+LEFT JOIN nate_markush.compound_records cr 
+ON md.molregno = cr.molregno
+LEFT JOIN nate_markush.metabolism m1
+ON cr.record_id = m1.drug_record_id 
+LEFT JOIN nate_markush.metabolism m2
+ON cr.record_id = m2.substrate_record_id 
+LEFT JOIN nate_markush.metabolism m3
+ON cr.record_id = m3.metabolite_record_id
+GROUP BY md.molregno
+)
+SELECT molregno,
+CASE WHEN COALESCE (drug_record_id, substrate_record_id, metabolite_record_id) IS NOT NULL
+THEN '1'
+ELSE '0' END AS metabolism_study,
+CASE WHEN COALESCE (enzyme_tid_1, enzyme_tid_2, enzyme_tid_3) IS NOT NULL
+THEN '1'
+ELSE '0' END AS metabolism_enzyme,
+CASE WHEN COALESCE (met_conversion_1, met_conversion_2, met_conversion_3 ) IS NOT NULL
+THEN '1'
+ELSE '0' END AS metabolism_comment
+FROM metabolism;"
+
+"CREATE TABLE test.ms_db_target AS 
+WITH distinct_molregno AS
+(
+SELECT DISTINCT molregno FROM 
+test.ms_db md 
+),
+-- target_result_1
+base_t AS (
+SELECT distinct_molregno.molregno,
+td.tid, 
+td.target_type,
+td.species_group_flag
+FROM distinct_molregno 
+LEFT JOIN nate_markush.activities act 
+ON distinct_molregno.molregno = act.molregno 
+LEFT JOIN nate_markush.assays ass 
+ON ass.assay_id = act.assay_id
+LEFT JOIN nate_markush.target_dictionary td 
+ON td.tid = ass.tid 
+),
+base_t_td AS
+(
+SELECT base_t.molregno,
+base_t.target_type,
+count(target_type) AS no_target_type,
+row_number() OVER (PARTITION BY base_t.molregno ORDER BY no_target_type desc) AS rank1,
+sum(species_group_flag) OVER (PARTITION BY base_t.molregno)/count(*) OVER (PARTITION BY base_t.molregno) 
+        AS ratio_species_group_flag
+FROM base_t
+GROUP BY 1,2
+),
+most_t_td AS 
+(SELECT main.molregno,
+target_type_main,
+target_type_scd,
+target_type_thd
+FROM 
+        (SELECT molregno, 
+        target_type AS target_type_main
+        FROM base_t_td
+        WHERE rank1 = 1) AS main
+LEFT JOIN 
+        (SELECT molregno,
+        target_type AS target_type_scd
+        FROM base_t_td
+        WHERE rank1 = 2) AS scd 
+ON main.molregno = scd.molregno
+LEFT JOIN 
+        (SELECT molregno,
+        target_type AS target_type_thd
+        FROM base_t_td
+        WHERE rank1 = 3) AS thd 
+ON main.molregno = thd.molregno
+),
+        result_1_target_dic AS
+        (
+                SELECT base_t_td.molregno, 
+                sum(no_target_type) AS no_target,
+                count(base_t_td.target_type) AS no_target_type,
+                target_type_main,
+                target_type_scd,
+                target_type_thd,
+                ratio_species_group_flag
+        FROM base_t_td
+        LEFT JOIN most_t_td
+        ON base_t_td.molregno = most_t_td.molregno
+        GROUP BY 1 
+        ORDER BY 2 DESC
+        ),
+-- target_result_2
+base_t_tt AS
+(
+SELECT base_t.molregno,
+tt.parent_type,
+count(*) AS no_target_parent_type,
+row_number() OVER (PARTITION BY base_t.molregno ORDER BY no_target_parent_type desc) AS rank1
+FROM base_t
+LEFT JOIN nate_markush.target_type tt 
+ON base_t.target_type = tt.target_type
+GROUP BY 1,2
+),
+most_t_tt AS 
+(
+SELECT molregno, parent_type AS target_parent_type_main
+FROM base_t_tt
+WHERE rank1 = 1
+),
+        result_2_target_type AS(
+        SELECT base_t_tt.molregno, 
+        count(base_t_tt.parent_type) AS no_target_parent_type,
+        most_t_tt.target_parent_type_main
+        FROM base_t_tt
+        LEFT JOIN most_t_tt
+        ON base_t_tt.molregno = most_t_tt.molregno
+        GROUP BY 1 
+        ),
+-- target_result_3
+base_t_tc AS 
+(
+SELECT base_t.molregno,
+base_t.tid,
+count(tc.component_id) AS no_component_per_target
+FROM base_t
+LEFT JOIN nate_markush.target_components tc  
+ON tc.tid = base_t.tid
+GROUP BY 1,2
+),
+        result_3_target_component AS 
+        (
+        SELECT molregno,
+        CASE WHEN count(tid) = 0 THEN '0'
+        ELSE sum(no_component_per_target) / count(tid) END AS ave_no_component_per_target
+        FROM base_t_tc
+        GROUP BY 1
+        ),
+-- target_result
+target_result AS 
+(
+SELECT r1.molregno,
+no_target,
+no_target_type,
+target_type_main,
+target_type_scd,
+target_type_thd,
+ratio_species_group_flag,
+no_target_parent_type,
+target_parent_type_main,
+ave_no_component_per_target
+FROM result_1_target_dic AS r1 
+LEFT JOIN result_2_target_type AS r2 ON r1.molregno = r2.molregno
+LEFT JOIN result_3_target_component AS r3 ON r1.molregno = r3.molregno
+)
+SELECT * FROM target_result;"
+
+"
+CREATE TABLE test.ms_db_drug AS 
+WITH distinct_molregno AS
+(
+SELECT DISTINCT molregno FROM 
+test.ms_db md 
+),
+result_drug AS
+(
+SELECT md.molregno,
+cp.ALOGP,
+cp.RO3_PASS,
+cp.NUM_RO5_VIOLATIONS,
+cp.CX_LOGD,
+cp.MOLECULAR_SPECIES,
+cp.QED_WEIGHTED,
+cp.NUM_LIPINSKI_RO5_VIOLATIONS,
+cs.STANDARD_INCHI_KEY,
+cs.CANONICAL_SMILES,
+md2.MAX_PHASE,
+md2.THERAPEUTIC_FLAG,
+md2.DOSED_INGREDIENT,
+md2.MOLECULE_TYPE,
+md2.ORAL,
+md2.PARENTERAL,
+md2.TOPICAL,
+md2.FIRST_IN_CLASS,
+md2.USAN_STEM,
+md2.AVAILABILITY_TYPE,
+md2.WITHDRAWN_FLAG
+FROM distinct_molregno AS md 
+LEFT JOIN nate_markush.compound_properties cp 
+ON cp.molregno = md.molregno
+LEFT JOIN nate_markush.compound_structures cs 
+ON cs.molregno = md.molregno
+LEFT JOIN nate_markush.molecule_dictionary md2 
+ON md2.molregno = md.molregno
+)
+SELECT * FROM result_drug
+"
+
+"CREATE TABLE test.ms_db_other_indication_mechanism AS 
+WITH distinct_molregno AS
+(
+SELECT DISTINCT molregno FROM 
+test.ms_db md 
+),
+base_m_ac AS
+(
+SELECT distinct_molregno.molregno,
+at2.parent_type AS mechanism_action_type_parent,
+count(*) AS no_molregno_action_type_parent,
+row_number() OVER (PARTITION BY molregno ORDER BY no_molregno_action_type_parent desc) AS rank1
+FROM distinct_molregno 
+LEFT JOIN nate_markush.drug_mechanism dm 
+ON distinct_molregno.molregno = dm.molregno
+LEFT JOIN nate_markush.action_type at2
+ON dm.action_type = at2.action_type 
+GROUP BY 1,2
+),
+most_m_ac AS 
+(
+SELECT molregno, mechanism_action_type_parent AS mechanism_action_type_parent_main
+FROM base_m_ac
+WHERE rank1 = 1
+),
+        result_1_mechanism AS (
+        SELECT base_m_ac.molregno, 
+        most_m_ac.mechanism_action_type_parent_main
+FROM base_m_ac
+LEFT JOIN most_m_ac
+ON base_m_ac.molregno = most_m_ac.molregno
+GROUP BY 1 
+)
+,
+base_m AS
+(
+SELECT distinct_molregno.molregno,
+dm.action_type AS mechanism_action_type,
+count(*) AS no_molregno_action_type,
+row_number() OVER (PARTITION BY molregno ORDER BY no_molregno_action_type desc) AS rank1
+FROM distinct_molregno 
+LEFT JOIN nate_markush.drug_mechanism dm 
+ON distinct_molregno.molregno = dm.molregno
+GROUP BY 1,2
+),
+most_m AS 
+(
+SELECT molregno, mechanism_action_type AS mechanism_action_type_main
+FROM base_m
+WHERE rank1 = 1
+),
+        result_2_mechanism AS(
+        SELECT base_m.molregno, 
+        count(base_m.mechanism_action_type)AS no_molregno_action_type,
+        most_m.mechanism_action_type_main
+FROM base_m
+LEFT JOIN most_m
+ON base_m.molregno = most_m.molregno
+GROUP BY 1 
+ORDER BY 2 DESC
+),
+-- doc
+doc_base AS (
+SELECT 
+ md.molregno,
+ d.`year`,
+ d.journal,
+ d.issue,
+ row_number() OVER (PARTITION BY molregno ORDER BY `year` asc, issue desc) AS rank1
+FROM distinct_molregno md 
+LEFT JOIN nate_markush.compound_records cr 
+            ON cr.molregno = md.molregno 
+LEFT JOIN nate_markush.docs d 
+            ON cr.doc_id = d.doc_id 
+WHERE `year` IS NOT NULL 
+GROUP BY 1,2,3
+ORDER BY 1,2,3,4 desc
+),
+doc_earliest_journal AS (
+SELECT 
+ molregno, 
+ journal,
+ `year`
+FROM doc_base
+WHERE rank1 = 1
+),
+doc_total_count as (
+SELECT
+ md.molregno,
+ COUNT(DISTINCT(d.doc_id)) AS number_of_docs
+FROM distinct_molregno md 
+LEFT JOIN nate_markush.compound_records cr 
+            ON cr.molregno = md.molregno 
+LEFT JOIN nate_markush.docs d 
+            ON cr.doc_id = d.doc_id 
+GROUP BY 1
+),
+        result_4_doc AS (
+        SELECT 
+         j.molregno,
+         j.journal, 
+         j.`year` AS earliest_year,
+         c.number_of_docs
+        FROM doc_earliest_journal j
+        LEFT JOIN doc_total_count c
+                   ON j.molregno = c.molregno
+        GROUP BY 1
+),
+-- atc
+base_atc AS 
+(
+SELECT 
+md.molregno,
+ac.level1 AS atc_l1,
+count(*) OVER (PARTITION BY md.molregno, atc_l1) as no_atc
+FROM distinct_molregno AS md 
+LEFT JOIN nate_markush.molecule_atc_classification mac
+ON mac.molregno = md.molregno
+LEFT JOIN nate_markush.atc_classification ac
+ON ac.level5 = mac.level5
+ORDER BY 1,3 DESC, 2
+),
+        result_5_atc AS 
+        (
+        SELECT a.molregno,  atc_l1_main, no_atc_type FROM 
+(
+(SELECT molregno, atc_l1 AS atc_l1_main 
+FROM base_atc
+GROUP BY 1) AS a
+LEFT JOIN 
+(SELECT molregno, count(*) AS no_atc_type
+        FROM (
+        SELECT molregno, atc_l1, count(*) AS no_atc_type
+        FROM base_atc
+        GROUP BY 1,2) AS atc_type GROUP BY 1) AS b
+ ON a.molregno = b.molregno
+)
+),
+-- result_other_mechanism_indication
+other_indication_mechanism AS 
+(
+SELECT
+        result_1_mechanism.molregno,
+        earliest_year,
+        journal,
+        number_of_docs,
+        no_molregno_action_type,
+        mechanism_action_type_main,
+        mechanism_action_type_parent_main,
+        atc_l1_main, 
+        no_atc_type
+from result_1_mechanism
+left join result_2_mechanism ON result_1_mechanism.molregno = result_2_mechanism.molregno
+LEFT JOIN result_4_doc ON result_1_mechanism.molregno = result_4_doc.molregno
+LEFT JOIN result_5_atc ON result_5_atc.molregno = result_1_mechanism.molregno
+)
+SELECT * FROM other_indication_mechanism;"
+
+"CREATE TABLE test.ms_training_outcomes_consolidated AS 
+WITH training_outcome_s_cons AS 
+(
+SELECT 
+md.molregno,
+indication,
+drugname,
+alogp,
+ro3_pass,
+num_ro5_violations,
+cx_logd,
+molecular_species,
+qed_weighted,
+num_lipinski_ro5_violations,
+standard_inchi_key,
+canonical_smiles,
+therapeutic_flag,
+dosed_ingredient,
+molecule_type,
+oral,
+parenteral,
+topical,
+first_in_class,
+usan_stem,
+availability_type,
+withdrawn_flag,
+metabolism_study,
+metabolism_enzyme,
+metabolism_comment,
+journal AS earliest_journal,
+earliest_year,
+number_of_docs,
+no_molregno_action_type,
+mechanism_action_type_main,
+mechanism_action_type_parent_main,
+no_target,
+no_target_type,
+target_type_main,
+target_type_scd,
+target_type_thd,
+ratio_species_group_flag,
+no_target_parent_type,
+target_parent_type_main,
+ave_no_component_per_target,
+atc_l1_main,
+no_atc_type,
+md.higheststatus AS highest_status
+FROM test.ms_db md 
+LEFT JOIN test.ms_db_drug AS mdd ON mdd.molregno = md.molregno 
+LEFT JOIN test.ms_db_metabolism mdm ON mdm.molregno = md.molregno 
+LEFT JOIN test.ms_db_other_indication_mechanism mdoim ON mdoim.molregno = md.molregno
+LEFT JOIN test.ms_db_target mdt ON mdt.molregno = md.molregno
+)
+SELECT * FROM training_outcome_s_cons; "
+
+"CREATE TABLE test.ms_traning_outcomes_ml as
+SELECT
+    molregno,
+         indication,
+         drugname,
+ -- start imputation for integer variables
+    IFNULL(num_ro5_violations, (
+            SELECT t.num_ro5_violations
+            FROM (
+                SELECT num_ro5_violations, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE num_ro5_violations IS NOT NULL
+                GROUP BY num_ro5_violations
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS num_ro5_violations,
+    IFNULL(num_lipinski_ro5_violations, (
+            SELECT t.num_lipinski_ro5_violations
+            FROM (
+                SELECT num_lipinski_ro5_violations, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE num_lipinski_ro5_violations IS NOT NULL
+                GROUP BY num_lipinski_ro5_violations
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS num_lipinski_ro5_violations,
+    IFNULL(earliest_year, (
+            SELECT t.earliest_year
+            FROM (
+                SELECT earliest_year, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE earliest_year IS NOT NULL
+                GROUP BY earliest_year
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS earliest_year,
+    IFNULL(number_of_docs, (
+            SELECT t.number_of_docs
+            FROM (
+                SELECT number_of_docs, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE number_of_docs IS NOT NULL
+                GROUP BY number_of_docs
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS number_of_docs,
+    IFNULL(no_molregno_action_type, (
+            SELECT t.no_molregno_action_type
+            FROM (
+                SELECT no_molregno_action_type, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE no_molregno_action_type IS NOT NULL
+                GROUP BY no_molregno_action_type
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS no_molregno_action_type,
+    IFNULL(no_target, (
+            SELECT t.no_target
+            FROM (
+                SELECT no_target, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE no_target IS NOT NULL
+                GROUP BY no_target
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS no_target,
+    IFNULL(no_target_type, (
+            SELECT t.no_target_type
+            FROM (
+                SELECT no_target_type, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE no_target_type IS NOT NULL
+                GROUP BY no_target_type
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS no_target_type,
+    IFNULL(no_target_parent_type, (
+            SELECT t.no_target_parent_type
+            FROM (
+                SELECT no_target_parent_type, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE no_target_parent_type IS NOT NULL
+                GROUP BY no_target_parent_type
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS no_target_parent_type,
+    IFNULL(no_atc_type, (
+            SELECT t.no_atc_type
+            FROM (
+                SELECT no_atc_type, COUNT(*) AS frequency
+                FROM test.ms_training_outcomes_consolidated
+                WHERE no_atc_type IS NOT NULL
+                GROUP BY no_atc_type
+                ORDER BY frequency DESC
+                LIMIT 1
+            ) AS t
+        )
+    ) AS no_atc_type,
+  -- start imputation for numeric variables
+    IFNULL(alogp, AVG(alogp) OVER ()) AS alogp,
+    IFNULL(cx_logd, AVG(cx_logd) OVER ()) AS cx_logd,
+    IFNULL(qed_weighted, AVG(qed_weighted) OVER ()) AS qed_weighted,
+    IFNULL(ratio_species_group_flag, AVG(ratio_species_group_flag) OVER ()) AS ratio_species_group_flag,
+    IFNULL(ave_no_component_per_target, AVG(ave_no_component_per_target) OVER ()) AS ave_no_component_per_target,
+-- end of imputation
+ro3_pass,
+molecular_species,
+standard_inchi_key,
+canonical_smiles,
+therapeutic_flag,
+dosed_ingredient,
+molecule_type,
+oral,
+parenteral,
+topical,
+first_in_class,
+usan_stem,
+availability_type,
+withdrawn_flag,
+metabolism_study,
+metabolism_enzyme,
+metabolism_comment,
+earliest_journal,
+mechanism_action_type_main,
+mechanism_action_type_parent_main,
+target_type_main,
+target_type_scd,
+target_type_thd,
+target_parent_type_main,
+highest_status,
+atc_l1_main
+    FROM test.ms_training_outcomes_consolidated;"
+
+"-- ro3_pass
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN ro3_pass VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET ro3_pass =
+    CASE
+        WHEN ro3_pass = 'Y' THEN 'Yes'
+        WHEN ro3_pass = 'N' THEN 'No'
+        ELSE 'NULL'
+    END; 
+
+   
+-- molecular_species
+UPDATE test.ms_traning_outcomes_ml 
+SET molecular_species = 'OTHERS'
+WHERE molecular_species IS NULL OR molecular_species = 'ZWITTERION';
+
+   
+-- therapeutic_flag
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN therapeutic_flag VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET therapeutic_flag =
+    CASE
+        WHEN therapeutic_flag = 0 THEN 'Default Value'
+        WHEN therapeutic_flag = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+   
+-- dosed_ingredient
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN dosed_ingredient VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET dosed_ingredient =
+    CASE
+        WHEN dosed_ingredient = 0 THEN 'Default Value'
+        WHEN dosed_ingredient = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+   
+-- molecule_type
+UPDATE test.ms_traning_outcomes_ml 
+SET molecule_type = 'Others'
+WHERE molecule_type IS NULL OR molecule_type IN ('Unknown', 'Oligosaccharide');
+   
+   
+-- oral
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN oral VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET oral =
+    CASE
+        WHEN oral = 0 THEN 'Default Value'
+        WHEN oral = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END;   
+
+
+-- parenteral
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN parenteral VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET parenteral =
+    CASE
+        WHEN parenteral = 0 THEN 'Default Value'
+        WHEN parenteral = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+   
+-- topical
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN topical VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET topical =
+    CASE
+        WHEN topical = 0 THEN 'Default Value'
+        WHEN topical = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+-- first_in_class 
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN first_in_class VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET first_in_class =
+    CASE
+        WHEN first_in_class = 1 THEN 'Yes'
+        WHEN first_in_class = 0 THEN 'No'
+        WHEN first_in_class = -1 THEN 'Preclinical Compound'
+        ELSE 'NULL'
+    END;
+
+ 
+-- usan_stem
+UPDATE test.ms_traning_outcomes_ml 
+SET usan_stem =
+        CASE 
+                WHEN usan_stem IS NULL THEN 'NULL' 
+                ELSE 'Others'
+                END
+WHERE usan_stem IS NULL OR usan_stem NOT IN ('-tinib', '-stat', '-oxacin', 'cef-')
+
+ALTER TABLE test.ms_traning_outcomes_ml 
+DROP COLUMN usan_stem;
+   
+
+-- availability_type
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN availability_type VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET availability_type =
+    CASE
+        WHEN availability_type = -2 THEN 'Withdrawn'
+        WHEN availability_type = -1 THEN 'Unknown'
+        WHEN availability_type = 0 THEN 'Discontinued'
+        WHEN availability_type = 1 THEN 'Prescription Only'
+        WHEN availability_type = 2 THEN 'Over the Counter'
+        ELSE 'NULL'
+    END;  
+
+
+-- withdrawn_flag
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN withdrawn_flag VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET withdrawn_flag =
+    CASE
+        WHEN withdrawn_flag = 0 THEN 'Default Value'
+        WHEN withdrawn_flag = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+  
+   
+-- metabolism_study  
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN metabolism_study VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET metabolism_study =
+    CASE
+        WHEN metabolism_study = 0 THEN 'Default Value'
+        WHEN metabolism_study = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+   
+-- metabolism_enzyme
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN metabolism_enzyme VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET metabolism_enzyme =
+    CASE
+        WHEN metabolism_enzyme = 0 THEN 'Default Value'
+        WHEN metabolism_enzyme = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END; 
+   
+
+-- metabolism_comment
+ALTER TABLE test.ms_traning_outcomes_ml 
+MODIFY COLUMN metabolism_comment VARCHAR(100);
+
+UPDATE test.ms_traning_outcomes_ml 
+SET metabolism_comment =
+    CASE
+        WHEN metabolism_comment = 0 THEN 'Default Value'
+        WHEN metabolism_comment = 1 THEN 'Yes'
+        ELSE 'NULL'
+    END;   
+   
+ 
+-- earliest_journal 
+UPDATE test.ms_traning_outcomes_ml 
+SET earliest_journal =
+    CASE
+        WHEN earliest_journal IS NULL THEN 'NULL'
+        WHEN earliest_journal = 'J Med Chem' THEN 'J. Med. Chem.'
+        WHEN earliest_journal = 'Bioorg Med Chem Lett' THEN 'Bioorg. Med. Chem. Lett.'
+        WHEN earliest_journal = 'J Nat Prod' THEN 'J. Nat. Prod.'
+        WHEN earliest_journal = 'Bioorg Med Chem' THEN 'Bioorg. Med. Chem.'
+        ELSE 'Others'
+    END
+WHERE earliest_journal IS NULL OR earliest_journal NOT IN ('J. Med. Chem.', 'Bioorg. Med. Chem. Lett.', 'J. Nat. Prod.', 'Bioorg. Med. Chem.', 'Gastroenterol Clin Biol'); 
+ 
+      
+--  mechanism_action_type_main  
+UPDATE test.ms_traning_outcomes_ml 
+SET mechanism_action_type_main =
+    CASE
+        WHEN mechanism_action_type_main IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE mechanism_action_type_main IS NULL OR mechanism_action_type_main NOT IN ('INHIBITOR', 'AGONIST', 'ANTAGONIST', 'BLOCKER');
+   
+ 
+-- mechanism_action_type_parent_main
+UPDATE test.ms_traning_outcomes_ml 
+SET mechanism_action_type_parent_main =
+    CASE
+        WHEN mechanism_action_type_parent_main IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE mechanism_action_type_parent_main IS NULL OR mechanism_action_type_parent_main = 'OTHER';
+   
+
+-- target_type_main
+UPDATE test.ms_traning_outcomes_ml 
+SET target_type_main =
+    CASE
+        WHEN target_type_main IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE target_type_main IS NULL OR target_type_main NOT IN ('ORGANISM', 'SINGLE PROTEIN', 'CELL-LINE', 'UNCHECKED');
+   
+ 
+-- target_type_scd  
+UPDATE test.ms_traning_outcomes_ml 
+SET target_type_scd =
+    CASE
+        WHEN target_type_scd IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE target_type_scd IS NULL OR target_type_scd NOT IN ('ORGANISM', 'SINGLE PROTEIN', 'CELL-LINE', 'UNCHECKED');
+   
+
+-- target_type_thd 
+UPDATE test.ms_traning_outcomes_ml 
+SET target_type_thd =
+    CASE
+        WHEN target_type_thd IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE target_type_thd IS NULL OR target_type_thd NOT IN ('ORGANISM', 'SINGLE PROTEIN', 'CELL-LINE', 'UNCHECKED');
+
+
+-- target_parent_type_main
+UPDATE test.ms_traning_outcomes_ml 
+SET target_parent_type_main =
+    CASE
+        WHEN target_parent_type_main IS NULL THEN 'NULL'
+        ELSE 'OTHERS'
+    END   
+WHERE target_parent_type_main IS NULL OR target_parent_type_main IN ('UNDEFINED', 'MOLECULAR');
+
+
+-- highest_status 
+UPDATE test.ms_traning_outcomes_ml 
+SET highest_status =
+    CASE
+        WHEN highest_status IN ('Discontinued', 'Suspended', 'Withdrawn', 'Outlicensed') THEN 'Discontinued'
+        WHEN highest_status IN ('Discovery', 'No Development Reported', 'Pre-registration') THEN 'Pre Clinical Trials'
+        WHEN highest_status IN ('Phase 1 Clinical', 'Clinical', 'Registered') THEN 'Phase 1 Clinical Trials'
+        WHEN highest_status = 'Phase 2 Clinical' THEN 'Phase 2 Clinical Trials'
+        WHEN highest_status = 'Phase 3 Clinical' THEN 'Phase 3 Clinical Trials'
+        WHEN highest_status = 'Launched' THEN 'Approved'
+        ELSE 'Others'
+    END;
+
+
+-- atc_l1_main 
+UPDATE test.ms_traning_outcomes_ml 
+SET atc_l1_main =
+    CASE
+        WHEN atc_l1_main IS NULL THEN 'NULL'
+        ELSE 'Others'
+    END
+WHERE atc_l1_main IS NULL OR atc_l1_main NOT IN ('L', 'N', 'J', 'C'); 
+
+
+-- delete result based features 
+ALTER TABLE test.ms_traning_outcomes_ml 
+DROP COLUMN therapeutic_flag, 
+DROP COLUMN dosed_ingredient, 
+DROP COLUMN oral, 
+DROP COLUMN parenteral, 
+DROP COLUMN topical, 
+DROP COLUMN first_in_class, 
+DROP COLUMN availability_type,
+DROP COLUMN withdrawn_flag;"
+
+"CREATE TABLE test.ms_atc_mapped as
+SELECT
+ md.molregno,
+ mad.chembl_id,
+ LEFT(mad.atc, 1) AS atc
+FROM test.ms_atc_data mad 
+LEFT JOIN nate_markush.molecule_dictionary md
+          ON mad.chembl_id = md.chembl_id;"
+
+"-- atc_l1_mapped
+ALTER TABLE test.ms_traning_outcomes_ml
+ADD atc_l1_mapped varchar(10);
+
+UPDATE test.ms_traning_outcomes_ml ml
+SET atc_l1_mapped = 
+(SELECT 
+  atc
+ FROM
+(SELECT 
+  ml.molregno,
+  am.atc,
+  count(*) OVER (PARTITION BY ml.molregno, am.atc) as no_atc
+ FROM test.ms_traning_outcomes_ml AS ml 
+ LEFT JOIN test.ms_atc_mapped am
+        ON ml.molregno = am.molregno
+ GROUP BY 1
+ ORDER BY 1,3 DESC, 2
+ ) sub
+WHERE sub.molregno = ml.molregno); 
+
+UPDATE test.ms_traning_outcomes_ml 
+SET atc_l1_mapped =
+    CASE
+        WHEN atc_l1_mapped IS NULL THEN 'NULL'
+        ELSE 'Others'
+    END
+WHERE atc_l1_mapped IS NULL OR atc_l1_mapped NOT IN ('L', 'N', 'A', 'J', 'C'); 
+
+
+-- highest_status_indication 
+ALTER TABLE test.ms_traning_outcomes_ml
+ADD highest_status_indication varchar(500);
+
+UPDATE test.ms_traning_outcomes_ml ml
+SET highest_status_indication = 
+(SELECT 
+ highest_status_indication
+FROM test.ms_highest_status_indication mhsi
+WHERE mhsi.indication = ml.indication);"
