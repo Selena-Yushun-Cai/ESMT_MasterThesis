@@ -296,3 +296,898 @@ m1_feature_importance3 = unlist(c) %>%
 
 
 
+
+
+
+
+# random forest & artificial neural network 
+training_outcomes <- read.csv("ml.csv",sep = ";", header = T)
+
+# Removing the string columns and other non-relevant columns while completing other data imputation steps (Ex: defining factor variables): 
+
+```{r, warning = FALSE}
+training_outcomes_ml <- training_outcomes[, -c(1, 2, 3, 20, 21)]
+
+training_outcomes_ml$ro3_pass <- factor(training_outcomes_ml$ro3_pass)
+training_outcomes_ml$molecular_species <- factor(training_outcomes_ml$molecular_species)
+training_outcomes_ml$molecule_type <- factor(training_outcomes_ml$molecule_type)
+training_outcomes_ml$metabolism_study <- factor(training_outcomes_ml$metabolism_study)
+training_outcomes_ml$metabolism_enzyme <- factor(training_outcomes_ml$metabolism_enzyme)
+training_outcomes_ml$metabolism_comment <- factor(training_outcomes_ml$metabolism_comment)
+training_outcomes_ml$earliest_journal <- factor(training_outcomes_ml$earliest_journal)
+training_outcomes_ml$mechanism_action_type_main <- factor(training_outcomes_ml$mechanism_action_type_main)
+training_outcomes_ml$mechanism_action_type_parent_main <- factor(training_outcomes_ml$mechanism_action_type_parent_main)
+training_outcomes_ml$target_type_main <- factor(training_outcomes_ml$target_type_main)
+training_outcomes_ml$target_type_scd <- factor(training_outcomes_ml$target_type_scd)
+training_outcomes_ml$target_type_thd <- factor(training_outcomes_ml$target_type_thd)
+training_outcomes_ml$target_parent_type_main <- factor(training_outcomes_ml$target_parent_type_main)
+training_outcomes_ml$highest_status <- factor(training_outcomes_ml$highest_status)
+training_outcomes_ml$atc_l1_main <- factor(training_outcomes_ml$atc_l1_main)
+training_outcomes_ml$atc_l1_mapped <- factor(training_outcomes_ml$atc_l1_mapped)
+training_outcomes_ml$highest_status_indication <- factor(training_outcomes_ml$highest_status_indication) 
+
+str(training_outcomes_ml)
+summary(training_outcomes_ml)
+```
+
+# Dividing into training and test data sets: 
+
+```{r, warning = FALSE}
+set.seed(0802)
+
+training_outcomes_ml_idx <- createDataPartition(training_outcomes_ml$highest_status,
+p = 0.8, list = F)
+training_outcomes_ml_train <- training_outcomes_ml[training_outcomes_ml_idx, ]
+training_outcomes_ml_test <- training_outcomes_ml[-training_outcomes_ml_idx, ] 
+```
+
+
+# Random Forest
+
+## Running the random forest model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+rf_model <- randomForest(highest_status ~ ., data = training_outcomes_ml_train,
+                  mtry = 10,
+                  ntree = 1000)
+
+predictions_rf <- predict(rf_model, newdata = training_outcomes_ml_test) 
+
+cm_rf <- table(training_outcomes_ml_test$highest_status, predictions_rf) 
+accuracy_rf <- sum(diag(cm_rf)) / sum(cm_rf) 
+print(accuracy_rf) 
+
+cm <- confusionMatrix(predictions_rf, training_outcomes_ml_test$highest_status) 
+print(cm)
+
+```
+
+
+
+```{r, warning = FALSE}
+
+num_cols <- ncol(training_outcomes_ml_train)
+feature_names <- colnames(training_outcomes_ml_train[, - (num_cols - 3)])  # Replace 'training_outcomes_ml_train' with your data frame 
+
+# Get the feature importance values
+importance <- importance(rf_model)
+# Create a data frame with feature names and their importance values
+importance_df <- data.frame(Feature = feature_names, Importance = importance)
+
+# Order the data frame by importance in descending order
+ordered_importance_df <- importance_df[order(importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+
+# Print the ordered data frame
+print(ordered_importance_df, width = 10000)
+
+# Convert the Overall column to a numeric vector
+ordered_importance_df$MeanDecreaseGini <- as.numeric(ordered_importance_df$MeanDecreaseGini)
+
+barplot(ordered_importance_df$MeanDecreaseGini, names.arg = rownames(ordered_importance_df),
+        xlab = "Features", ylab = "Importance", main = "Variable Importance")
+
+# Create a data frame to store the class names and their respective importance values
+class_importance_df <- data.frame(Class = rownames(ordered_importance_df),
+                                  MeanDecreaseGini = as.numeric(ordered_importance_df[, "MeanDecreaseGini"]))
+
+class_importance_df <- class_importance_df[order(class_importance_df$MeanDecreaseGini, decreasing = TRUE), ] 
+class_importance_df$Class <- factor(class_importance_df$Class, levels = class_importance_df$Class) 
+
+# Create a ggplot bar plot for feature importance for each class
+p <- ggplot(class_importance_df, aes(x = Class, y = MeanDecreaseGini, fill = Class)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Input Features", y = "Importance", title = "Random Forest Feature Importance Plot") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.position = "none")
+
+# Print the plot 
+print(p)
+
+```
+
+
+```{r, warning = FALSE}
+print(rf_model$mtry)
+print(rf_model$ntree)
+```
+
+```{r, warning = FALSE}
+# Initialize vectors to store sensitivity and specificity for each class
+sensitivity <- numeric(5)
+specificity <- numeric(5)
+
+# Calculate sensitivity (true positive rate) and specificity (true negative rate) for each class
+for (i in 1:6) {
+  TP <- cm$table[i, i]
+  FN <- sum(cm$table[i, ]) - TP
+  TN <- sum(diag(cm$table)) - sum(cm$table[i, ]) - sum(cm$table[, i]) + TP
+  FP <- sum(cm$table[, i]) - TP
+
+  sensitivity[i] <- TP / (TP + FN)
+  specificity[i] <- TN / (TN + FP)
+}
+
+# Calculate balanced accuracy for each class (average of sensitivity and specificity)
+balanced_accuracy <- (sensitivity + specificity) / 2
+
+print(balanced_accuracy)
+
+tp <- cm$table[row(cm$table) == col(cm$table)]
+fp <- colSums(cm$table) - tp
+
+# Calculate the overall precision
+overall_precision <- sum(tp) / sum(tp + fp)
+
+# Print the overall precision
+print(paste("Overall Precision:", overall_precision))
+```
+
+```{r, warning = FALSE}
+cm_rff <- table(training_outcomes_ml_test$highest_status, predictions_rf)
+print(cm_rff)
+
+# Calculate Precision for each class
+precision <- diag(cm_rff) / colSums(cm_rff)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_rff) / rowSums(cm_rff)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_rff)) / sum(cm_rff)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_rff) / colSums(cm_rff)
+specificity <- rowSums(cm_rff) - diag(cm_rff) / (colSums(cm_rff) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+```
+
+
+# Neural Nets:
+
+## Running the neural network model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+nn_grid <- tuneGrid <- expand.grid(.size=c(5, 10, 15),
+                        .decay=c(0.1, 0.01, 0.001))
+
+nn_model <- train(
+  highest_status ~ .,
+  data = training_outcomes_ml_train,
+  method = "nnet",
+  tuneGrid = nn_grid
+)
+
+predictions_nn <- predict(nn_model, newdata = training_outcomes_ml_test)
+
+dim(training_outcomes_ml_test)
+dim(predictions_nn)
+
+cm_nn <- confusionMatrix(predictions_nn, training_outcomes_ml_test$highest_status)
+print(cm_nn) 
+```
+
+```{r, warning = FALSE}
+# Retrieve the best performing hyperparameter values 
+best_hyperparameters <- nn_model$bestTune
+print(best_hyperparameters)
+```
+
+```{r, warning = FALSE}
+cm_nn <- table(training_outcomes_ml_test$highest_status, predictions_nn)
+print(cm_nn)
+
+# Calculate Precision for each class
+precision <- diag(cm_nn) / colSums(cm_nn)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_nn) / rowSums(cm_nn)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_nn)) / sum(cm_nn)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_nn) / colSums(cm_nn)
+specificity <- rowSums(cm_nn) - diag(cm_nn) / (colSums(cm_nn) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+# Get predicted probabilities for each class
+predicted_probabilities <- predict(nn_model, newdata = training_outcomes_ml_test, type = "prob")
+
+# Calculate AUC-ROC for each class
+roc_values <- lapply(1:6, function(i) {
+  roc_obj <- multiclass.roc(training_outcomes_ml_test$highest_status, factor(predictions_nn, levels = c("Discontinued",
+                                                                       
+                                                                       "Pre Clinical Trials",
+                                                                       
+                                                                       "Phase 1 Clinical Trials",
+                                                                       
+                                                                       "Phase 2 Clinical Trials", 
+                                                                       
+                                                                       "Phase 3 Clinical Trials",
+                                                                       
+                                                                       "Approved"),
+                                                    
+                                                    , ordered = T))
+})
+
+# Print the AUC-ROC values for each class
+print(roc_values)
+```
+
+# Install the required packages: 
+
+```{r, warning = FALSE}
+#install.packages("tidyverse")
+#install.packages("Hmisc")
+#install.packages("VIM")
+#install.packages("lubridate")
+#install.packages("stringr")
+#install.packages("dplyr")
+#install.packages("ggplot2")
+#install.packages("rvest")
+#install.packages("caret")
+#install.packages("randomForest")
+#install.packages("glmnet")
+#install.packages("xgboost")
+#install.packages("nnet")
+#install.packages("rpart")
+#install.packages("pROC")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+```
+
+
+# Run the installed packages and set the standardization: 
+
+```{r, warning = FALSE}
+library(tidyverse)
+library(Hmisc)
+library(VIM)
+library(lubridate)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(rvest)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(xgboost)
+library(nnet)
+library(rpart)
+library(pROC)
+library(rstatix)
+library(ggpubr)
+options(encoding = "utf-8")
+```
+
+
+# Import the data: 
+
+```{r, warning = FALSE}
+training_outcomes <- read.csv("C:/Users/0037R00002smXI0QAM/Desktop/ms_training_outcomes_ml_updated.csv", header = T)
+```
+
+
+# Visualize the highest status split: 
+
+```{r, warning = FALSE}
+training_outcomes$highest_status = factor(training_outcomes$highest_status, levels = c("Discontinued", "Pre Clinical Trials", "Phase 1 Clinical Trials", "Phase 2 Clinical Trials", "Phase 3 Clinical Trials", "Approved"))
+
+ggplot(data = training_outcomes, aes(x = highest_status, fill = highest_status)) + 
+    geom_bar() + 
+    labs(title = "Highest status in drug development pipeline") +
+    theme(plot.title = element_text(size = 20, face = "bold"),
+          panel.background = element_rect(fill = "transparent"),
+          panel.grid.major = element_blank(),                   #
+          panel.grid.minor = element_blank()) +
+    geom_text(stat = "count", aes(label = stat(count)), vjust = -0.5)
+```
+
+
+# Removing the string columns and other non-relevant columns while completing other data imputation steps (Ex: defining factor variables): 
+
+```{r, warning = FALSE}
+training_outcomes_ml <- training_outcomes[, -c(1, 2, 3, 4, 5, 9, 17, 20, 21, 23, 24)]
+
+training_outcomes_ml$ro3_pass <- factor(training_outcomes_ml$ro3_pass)
+training_outcomes_ml$molecular_species <- factor(training_outcomes_ml$molecular_species)
+training_outcomes_ml$molecule_type <- factor(training_outcomes_ml$molecule_type)
+training_outcomes_ml$metabolism_comment <- factor(training_outcomes_ml$metabolism_comment)
+training_outcomes_ml$earliest_journal <- factor(training_outcomes_ml$earliest_journal)
+training_outcomes_ml$mechanism_action_type_main <- factor(training_outcomes_ml$mechanism_action_type_main)
+training_outcomes_ml$mechanism_action_type_parent_main <- factor(training_outcomes_ml$mechanism_action_type_parent_main)
+training_outcomes_ml$target_type_main <- factor(training_outcomes_ml$target_type_main)
+training_outcomes_ml$target_type_scd <- factor(training_outcomes_ml$target_type_scd)
+training_outcomes_ml$target_type_thd <- factor(training_outcomes_ml$target_type_thd)
+training_outcomes_ml$target_parent_type_main <- factor(training_outcomes_ml$target_parent_type_main)
+training_outcomes_ml$highest_status <- factor(training_outcomes_ml$highest_status)
+training_outcomes_ml$atc_l1_main <- factor(training_outcomes_ml$atc_l1_main)
+training_outcomes_ml$atc_l1_mapped <- factor(training_outcomes_ml$atc_l1_mapped)
+training_outcomes_ml$highest_status_indication <- factor(training_outcomes_ml$highest_status_indication) 
+
+str(training_outcomes_ml)
+summary(training_outcomes_ml)
+```
+
+
+# Dividing into training and test data sets: 
+
+```{r, warning = FALSE}
+set.seed(0802)
+
+training_outcomes_ml_idx <- createDataPartition(training_outcomes_ml$highest_status,
+p = 0.8, list = F)
+training_outcomes_ml_train <- training_outcomes_ml[training_outcomes_ml_idx, ]
+training_outcomes_ml_test <- training_outcomes_ml[-training_outcomes_ml_idx, ] 
+```
+
+
+# Random Forest
+
+## Running the random forest model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+rf_model <- randomForest(highest_status ~ ., data = training_outcomes_ml_train,
+                  mtry = 10,
+                  ntree = 1000)
+
+predictions_rf <- predict(rf_model, newdata = training_outcomes_ml_test) 
+
+cm_rf <- table(training_outcomes_ml_test$highest_status, predictions_rf) 
+accuracy_rf <- sum(diag(cm_rf)) / sum(cm_rf) 
+print(accuracy_rf) 
+
+cm <- confusionMatrix(predictions_rf, training_outcomes_ml_test$highest_status) 
+print(cm)
+
+```
+
+
+
+```{r, warning = FALSE}
+
+num_cols <- ncol(training_outcomes_ml_train)
+feature_names <- colnames(training_outcomes_ml_train[, - (num_cols - 3)])  # Replace 'training_outcomes_ml_train' with your data frame 
+
+# Get the feature importance values
+importance <- importance(rf_model)
+# Create a data frame with feature names and their importance values
+importance_df <- data.frame(Feature = feature_names, Importance = importance)
+
+# Order the data frame by importance in descending order
+ordered_importance_df <- importance_df[order(importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+
+# Print the ordered data frame
+print(ordered_importance_df, width = 10000)
+
+# Convert the Overall column to a numeric vector
+ordered_importance_df$MeanDecreaseGini <- as.numeric(ordered_importance_df$MeanDecreaseGini)
+
+barplot(ordered_importance_df$MeanDecreaseGini, names.arg = rownames(ordered_importance_df),
+        xlab = "Features", ylab = "Importance", main = "Variable Importance")
+
+# Create a data frame to store the class names and their respective importance values
+class_importance_df <- data.frame(Class = rownames(ordered_importance_df),
+                                  MeanDecreaseGini = as.numeric(ordered_importance_df[, "MeanDecreaseGini"]))
+
+class_importance_df <- class_importance_df[order(class_importance_df$MeanDecreaseGini, decreasing = TRUE), ] 
+class_importance_df$Class <- factor(class_importance_df$Class, levels = class_importance_df$Class) 
+
+# Create a ggplot bar plot for feature importance for each class
+p <- ggplot(class_importance_df, aes(x = Class, y = MeanDecreaseGini, fill = Class)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Input Features", y = "Importance", title = "Random Forest Feature Importance Plot (Based on LASSO Regression Feature Selection)") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.position = "none") 
+
+# Print the plot 
+print(p) 
+
+```
+
+
+```{r, warning = FALSE}
+print(rf_model$mtry)
+print(rf_model$ntree)
+```
+
+```{r, warning = FALSE}
+# Initialize vectors to store sensitivity and specificity for each class
+sensitivity <- numeric(5)
+specificity <- numeric(5)
+
+# Calculate sensitivity (true positive rate) and specificity (true negative rate) for each class
+for (i in 1:6) {
+  TP <- cm$table[i, i]
+  FN <- sum(cm$table[i, ]) - TP
+  TN <- sum(diag(cm$table)) - sum(cm$table[i, ]) - sum(cm$table[, i]) + TP
+  FP <- sum(cm$table[, i]) - TP
+
+  sensitivity[i] <- TP / (TP + FN)
+  specificity[i] <- TN / (TN + FP)
+}
+
+# Calculate balanced accuracy for each class (average of sensitivity and specificity)
+balanced_accuracy <- (sensitivity + specificity) / 2
+
+print(balanced_accuracy)
+
+tp <- cm$table[row(cm$table) == col(cm$table)]
+fp <- colSums(cm$table) - tp
+
+# Calculate the overall precision
+overall_precision <- sum(tp) / sum(tp + fp)
+
+# Print the overall precision
+print(paste("Overall Precision:", overall_precision))
+```
+
+```{r, warning = FALSE}
+cm_rff <- table(training_outcomes_ml_test$highest_status, predictions_rf)
+print(cm_rff)
+
+# Calculate Precision for each class
+precision <- diag(cm_rff) / colSums(cm_rff)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_rff) / rowSums(cm_rff)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_rff)) / sum(cm_rff)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_rff) / colSums(cm_rff)
+specificity <- rowSums(cm_rff) - diag(cm_rff) / (colSums(cm_rff) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+# Calculate AUC-ROC for each class
+roc_values_rf <- lapply(1:6, function(i) {
+  roc_obj_rf <- multiclass.roc(training_outcomes_ml_test$highest_status, factor(predictions_rf, levels = c("Discontinued",
+                                                                       
+                                                                       "Pre Clinical Trials",
+                                                                       
+                                                                       "Phase 1 Clinical Trials",
+                                                                       
+                                                                       "Phase 2 Clinical Trials", 
+                                                                       
+                                                                       "Phase 3 Clinical Trials",
+                                                                       
+                                                                       "Approved"),
+                                                    
+                                                    , ordered = T))
+})
+
+# Print the AUC-ROC values for each class
+print(roc_values_rf)
+
+```
+
+
+# Neural Nets:
+
+## Running the neural network model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+nn_grid <- tuneGrid <- expand.grid(.size=c(5, 10, 15),
+                        .decay=c(0.1, 0.01, 0.001))
+
+nn_model <- train(
+  highest_status ~ .,
+  data = training_outcomes_ml_train,
+  method = "nnet",
+  tuneGrid = nn_grid,
+  reproducible = TRUE
+)
+
+predictions_nn <- predict(nn_model, newdata = training_outcomes_ml_test)
+
+dim(training_outcomes_ml_test)
+dim(predictions_nn)
+
+cm_nn <- confusionMatrix(predictions_nn, training_outcomes_ml_test$highest_status)
+print(cm_nn) 
+```
+
+```{r, warning = FALSE}
+# Retrieve the best performing hyperparameter values 
+best_hyperparameters <- nn_model$bestTune
+print(best_hyperparameters)
+```
+
+
+```{r, warning = FALSE}
+cm_nn <- table(training_outcomes_ml_test$highest_status, predictions_nn)
+print(cm_nn)
+
+# Calculate Precision for each class
+precision <- diag(cm_nn) / colSums(cm_nn)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_nn) / rowSums(cm_nn)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_nn)) / sum(cm_nn)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_nn) / colSums(cm_nn)
+specificity <- rowSums(cm_nn) - diag(cm_nn) / (colSums(cm_nn) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+# Get predicted probabilities for each class
+predicted_probabilities <- predict(nn_model, newdata = training_outcomes_ml_test, type = "prob")
+
+# Calculate AUC-ROC for each class
+roc_values <- lapply(1:6, function(i) {
+  roc_obj <- multiclass.roc(training_outcomes_ml_test$highest_status, factor(predictions_nn, levels = c("Discontinued",
+                                                                       
+                                                                       "Pre Clinical Trials",
+                                                                       
+                                                                       "Phase 1 Clinical Trials",
+                                                                       
+                                                                       "Phase 2 Clinical Trials", 
+                                                                       
+                                                                       "Phase 3 Clinical Trials",
+                                                                       
+                                                                       "Approved"),
+                                                    
+                                                    , ordered = T))
+})
+
+# Print the AUC-ROC values for each class
+print(roc_values)
+
+```
+
+
+# Install the required packages: 
+
+```{r, warning = FALSE}
+#install.packages("tidyverse")
+#install.packages("Hmisc")
+#install.packages("VIM")
+#install.packages("lubridate")
+#install.packages("stringr")
+#install.packages("dplyr")
+#install.packages("ggplot2")
+#install.packages("rvest")
+#install.packages("caret")
+#install.packages("randomForest")
+#install.packages("glmnet")
+#install.packages("xgboost")
+#install.packages("nnet")
+#install.packages("rpart")
+#install.packages("pROC")
+#install.packages("rstatix")
+#install.packages("ggpubr")
+```
+
+
+# Run the installed packages and set the standardization: 
+
+```{r, warning = FALSE}
+library(tidyverse)
+library(Hmisc)
+library(VIM)
+library(lubridate)
+library(stringr)
+library(dplyr)
+library(ggplot2)
+library(rvest)
+library(caret)
+library(randomForest)
+library(glmnet)
+library(xgboost)
+library(nnet)
+library(rpart)
+library(pROC)
+library(rstatix)
+library(ggpubr)
+options(encoding = "utf-8")
+```
+
+
+# Import the data: 
+
+```{r, warning = FALSE}
+training_outcomes <- read.csv("C:/Users/0037R00002smXI0QAM/Desktop/ms_training_outcomes_ml_updated.csv", header = T)
+```
+
+
+# Visualize the highest status split: 
+
+```{r, warning = FALSE}
+training_outcomes$highest_status = factor(training_outcomes$highest_status, levels = c("Discontinued", "Pre Clinical Trials", "Phase 1 Clinical Trials", "Phase 2 Clinical Trials", "Phase 3 Clinical Trials", "Approved"))
+
+ggplot(data = training_outcomes, aes(x = highest_status, fill = highest_status)) + 
+    geom_bar() + 
+    labs(title = "Highest status in drug development pipeline") +
+    theme(plot.title = element_text(size = 20, face = "bold"),
+          panel.background = element_rect(fill = "transparent"),
+          panel.grid.major = element_blank(),                   #
+          panel.grid.minor = element_blank()) +
+    geom_text(stat = "count", aes(label = stat(count)), vjust = -0.5)
+```
+
+
+# Removing the string columns and other non-relevant columns while completing other data imputation steps (Ex: defining factor variables): 
+
+```{r, warning = FALSE}
+training_outcomes_ml <- training_outcomes[, -c(1, 2, 3, 20, 21, 23, 24, 25, 16, 12, 22, 18, 8, 28, 11, 32, 36, 27, 29, 19, 26, 30, 31, 10, 4, 5)]
+
+training_outcomes_ml$highest_status <- factor(training_outcomes_ml$highest_status)
+training_outcomes_ml$atc_l1_main <- factor(training_outcomes_ml$atc_l1_main)
+training_outcomes_ml$atc_l1_mapped <- factor(training_outcomes_ml$atc_l1_mapped)
+
+str(training_outcomes_ml)
+summary(training_outcomes_ml)
+```
+
+
+# Dividing into training and test data sets: 
+
+```{r, warning = FALSE}
+set.seed(0802)
+
+training_outcomes_ml_idx <- createDataPartition(training_outcomes_ml$highest_status,
+p = 0.8, list = F)
+training_outcomes_ml_train <- training_outcomes_ml[training_outcomes_ml_idx, ]
+training_outcomes_ml_test <- training_outcomes_ml[-training_outcomes_ml_idx, ] 
+```
+
+
+# Random Forest
+
+## Running the random forest model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+rf_model <- randomForest(highest_status ~ ., data = training_outcomes_ml_train,
+                  mtry = 10,
+                  ntree = 1000)
+
+predictions_rf <- predict(rf_model, newdata = training_outcomes_ml_test) 
+
+cm_rf <- table(training_outcomes_ml_test$highest_status, predictions_rf) 
+accuracy_rf <- sum(diag(cm_rf)) / sum(cm_rf) 
+print(accuracy_rf) 
+
+cm <- confusionMatrix(predictions_rf, training_outcomes_ml_test$highest_status) 
+print(cm)
+
+```
+
+
+```{r, warning = FALSE}
+
+num_cols <- ncol(training_outcomes_ml_train)
+feature_names <- colnames(training_outcomes_ml_train[, - (num_cols - 3)])  # Replace 'training_outcomes_ml_train' with your data frame 
+
+# Get the feature importance values
+importance <- importance(rf_model)
+# Create a data frame with feature names and their importance values
+importance_df <- data.frame(Feature = feature_names, Importance = importance)
+
+# Order the data frame by importance in descending order
+ordered_importance_df <- importance_df[order(importance_df$MeanDecreaseGini, decreasing = TRUE), ]
+
+# Print the ordered data frame
+print(ordered_importance_df, width = 10000)
+
+# Convert the Overall column to a numeric vector
+ordered_importance_df$MeanDecreaseGini <- as.numeric(ordered_importance_df$MeanDecreaseGini)
+
+barplot(ordered_importance_df$MeanDecreaseGini, names.arg = rownames(ordered_importance_df),
+        xlab = "Features", ylab = "Importance", main = "Variable Importance")
+
+# Create a data frame to store the class names and their respective importance values
+class_importance_df <- data.frame(Class = rownames(ordered_importance_df),
+                                  MeanDecreaseGini = as.numeric(ordered_importance_df[, "MeanDecreaseGini"]))
+
+class_importance_df <- class_importance_df[order(class_importance_df$MeanDecreaseGini, decreasing = TRUE), ] 
+class_importance_df$Class <- factor(class_importance_df$Class, levels = class_importance_df$Class) 
+
+# Create a ggplot bar plot for feature importance for each class
+p <- ggplot(class_importance_df, aes(x = Class, y = MeanDecreaseGini, fill = Class)) + 
+  geom_bar(stat = "identity") +
+  labs(x = "Input Features", y = "Importance", title = "Random Forest Feature Importance Plot (Based on RF Feature Importance)") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        legend.position = "none")
+
+# Print the plot 
+print(p) 
+
+```
+
+
+```{r, warning = FALSE}
+cm_rff <- table(training_outcomes_ml_test$highest_status, predictions_rf)
+print(cm_rff)
+
+# Calculate Precision for each class
+precision <- diag(cm_rff) / colSums(cm_rff)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_rff) / rowSums(cm_rff)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_rff)) / sum(cm_rff)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_rff) / colSums(cm_rff)
+specificity <- rowSums(cm_rff) - diag(cm_rff) / (colSums(cm_rff) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+# Calculate AUC-ROC for each class
+roc_values_rf <- lapply(1:6, function(i) {
+  roc_obj_rf <- multiclass.roc(training_outcomes_ml_test$highest_status, factor(predictions_rf, levels = c("Discontinued",
+                                                                       
+                                                                       "Pre Clinical Trials",
+                                                                       
+                                                                       "Phase 1 Clinical Trials",
+                                                                       
+                                                                       "Phase 2 Clinical Trials", 
+                                                                       
+                                                                       "Phase 3 Clinical Trials",
+                                                                       
+                                                                       "Approved"),
+                                                    
+                                                    , ordered = T))
+})
+
+# Print the AUC-ROC values for each class
+print(roc_values_rf)
+
+```
+
+
+# Neural Nets:
+
+## Running the neural netwrok model and calculating the assessment metrics: 
+
+```{r, warning = FALSE}
+
+nn_grid <- tuneGrid <- expand.grid(.size=c(5, 10, 15),
+                        .decay=c(0.1, 0.01, 0.001))
+
+nn_model <- train(
+  highest_status ~ .,
+  data = training_outcomes_ml_train,
+  method = "nnet",
+  tuneGrid = nn_grid
+)
+
+predictions_nn <- predict(nn_model, newdata = training_outcomes_ml_test)
+
+dim(training_outcomes_ml_test)
+dim(predictions_nn)
+
+cm_nn <- confusionMatrix(predictions_nn, training_outcomes_ml_test$highest_status)
+print(cm_nn) 
+```
+
+```{r, warning = FALSE}
+# Retrieve the best performing hyperparameter values 
+best_hyperparameters <- nn_model$bestTune
+print(best_hyperparameters)
+```
+
+```{r, warning = FALSE}
+cm_nn <- table(training_outcomes_ml_test$highest_status, predictions_nn)
+print(cm_nn)
+
+# Calculate Precision for each class
+precision <- diag(cm_nn) / colSums(cm_nn)
+print(precision)
+
+# Calculate Recall for each class
+recall <- diag(cm_nn) / rowSums(cm_nn)
+print(recall)
+
+# Calculate Accuracy
+accuracy <- sum(diag(cm_nn)) / sum(cm_nn)
+print(accuracy)
+
+# Calculate Balanced Accuracy
+sensitivity <- diag(cm_nn) / colSums(cm_nn)
+specificity <- rowSums(cm_nn) - diag(cm_nn) / (colSums(cm_nn) - 1)
+balanced_accuracy <- mean((sensitivity + specificity) / 2)
+print(balanced_accuracy)
+
+# Calculate F1 Score for each class
+f1_score <- 2 * precision * recall / (precision + recall)
+print(f1_score)
+
+# Get predicted probabilities for each class
+predicted_probabilities <- predict(nn_model, newdata = training_outcomes_ml_test, type = "prob")
+
+# Calculate AUC-ROC for each class
+roc_values <- lapply(1:6, function(i) {
+  roc_obj <- multiclass.roc(training_outcomes_ml_test$highest_status, factor(predictions_nn, levels = c("Discontinued",
+                                                                       
+                                                                       "Pre Clinical Trials",
+                                                                       
+                                                                       "Phase 1 Clinical Trials",
+                                                                       
+                                                                       "Phase 2 Clinical Trials", 
+                                                                       
+                                                                       "Phase 3 Clinical Trials",
+                                                                       
+                                                                       "Approved"),
+                                                    
+                                                    , ordered = T))
+})
+
+# Print the AUC-ROC values for each class
+print(roc_values)
+```
+
+
+
